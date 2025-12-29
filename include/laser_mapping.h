@@ -76,10 +76,10 @@ namespace akf_lio
         /// interface of mtk, customized obseravtion model
         void ObsModel(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_data);
         ////////////////////////////// debug save / show ////////////////////////////////////////////////////////////////
-        void PublishPath();
-        void PublishOdometry();
+        void PublishPath(const rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr &pub_path);
+        void PublishOdometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr &pub_odom_aft_mapped);
         void PublishFrameWorld();
-        void PublishFrameRegWorld();
+        void PublishFrameRegWorld(const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr &pub_laser_cloud_reg_world);
         void Savetrajectory(const std::string &traj_file);
         void VoxelGridDownsample(PointCloudType::Ptr &cloud_in, PointVector &cloud_down_reg);
         static bool time_list(const PointType2 &x, const PointType2 &y);
@@ -156,7 +156,7 @@ namespace akf_lio
 
         /// options
         std::ofstream fout_pre, fout_out;
-        visualization_msgs::msg::MarkerArray pa_cov;
+        visualization_msgs::msg::MarkerArray pa_cov_;
 
         double last_timestamp_lidar_ = 0;
         double lidar_end_time_ = 0;

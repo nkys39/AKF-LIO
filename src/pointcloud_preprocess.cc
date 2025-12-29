@@ -13,13 +13,13 @@ namespace akf_lio
         point_filter_num_ = point_filter_num;
     }
 
-    void PointCloudPreprocess::Process(const livox_ros_driver::CustomMsg::ConstPtr &msg, PointCloudType::Ptr &pcl_out)
+    void PointCloudPreprocess::Process(const livox_interfaces::msg::CustomMsg::SharedPtr &msg, PointCloudType::Ptr &pcl_out)
     {
         AviaHandler(msg);
         *pcl_out = cloud_out_;
     }
 
-    void PointCloudPreprocess::Process(const sensor_msgs::PointCloud2::ConstPtr &msg, PointCloudType::Ptr &pcl_out)
+    void PointCloudPreprocess::Process(const sensor_msgs::msg::PointCloud2::SharedPtr &msg, PointCloudType::Ptr &pcl_out)
     {
         switch (lidar_type_)
         {
@@ -38,7 +38,7 @@ namespace akf_lio
         *pcl_out = cloud_out_;
     }
 
-    void PointCloudPreprocess::AviaHandler(const livox_ros_driver::CustomMsg::ConstPtr &msg)
+    void PointCloudPreprocess::AviaHandler(const livox_interfaces::msg::CustomMsg::SharedPtr &msg)
     {
         cloud_out_.clear();
         cloud_full_.clear();
@@ -90,7 +90,7 @@ double range = cloud_full_[i].x * cloud_full_[i].x + cloud_full_[i].y * cloud_fu
         }
     }
 
-    void PointCloudPreprocess::Oust64Handler(const sensor_msgs::PointCloud2::ConstPtr &msg)
+    void PointCloudPreprocess::Oust64Handler(const sensor_msgs::msg::PointCloud2::SharedPtr &msg)
     {
         cloud_out_.clear();
         cloud_full_.clear();
@@ -99,7 +99,7 @@ double range = cloud_full_[i].x * cloud_full_[i].x + cloud_full_[i].y * cloud_fu
         int plsize = pl_orig.size();
         cloud_out_.reserve(plsize);
 
-        for (int i = 0; i < pl_orig.points.size(); i++)
+        for (size_t i = 0; i < pl_orig.points.size(); i++)
         {
             if (i % point_filter_num_ != 0)
                 continue;
@@ -123,7 +123,7 @@ double range = cloud_full_[i].x * cloud_full_[i].x + cloud_full_[i].y * cloud_fu
         }
     }
 
-    void PointCloudPreprocess::VelodyneHandler(const sensor_msgs::PointCloud2::ConstPtr &msg)
+    void PointCloudPreprocess::VelodyneHandler(const sensor_msgs::msg::PointCloud2::SharedPtr &msg)
     {
         cloud_out_.clear();
         cloud_full_.clear();
