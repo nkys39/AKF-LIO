@@ -2,9 +2,10 @@
 #define AKF_LIO_IMU_PROCESSING_H
 
 #include <glog/logging.h>
-#include <nav_msgs/Odometry.h>
-#include <sensor_msgs/Imu.h>
-#include <sensor_msgs/PointCloud2.h>
+#include <rclcpp/rclcpp.hpp>
+#include <nav_msgs/msg/odometry.hpp>
+#include <sensor_msgs/msg/imu.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
 #include <cmath>
 #include <deque>
 #include <fstream>
@@ -19,7 +20,13 @@ namespace akf_lio
 
     constexpr int MAX_INI_COUNT = 20;
 
-    bool time_list(const PointType2 &x, const PointType2 &y) { return (x.curvature < y.curvature); };
+    inline bool time_list_imu(const PointType2 &x, const PointType2 &y) { return (x.curvature < y.curvature); };
+
+    // Helper function to get timestamp from IMU message
+    inline double getImuTimestamp(const sensor_msgs::msg::Imu::SharedPtr &msg)
+    {
+        return static_cast<double>(msg->header.stamp.sec) + static_cast<double>(msg->header.stamp.nanosec) * 1e-9;
+    }
 
     /// IMU Process and undistortion
     class ImuProcess
@@ -59,8 +66,8 @@ namespace akf_lio
                            PointCloudType &pcl_out);
 
         PointCloudType::Ptr cur_pcl_un_;
-        sensor_msgs::ImuConstPtr last_imu_;
-        std::deque<sensor_msgs::ImuConstPtr> v_imu_;
+        sensor_msgs::msg::Imu::SharedPtr last_imu_;
+        std::deque<sensor_msgs::msg::Imu::SharedPtr> v_imu_;
         std::vector<common::Pose6D> IMUpose_;
         std::vector<common::M3D> v_rot_pcl_;
         common::M3D Lidar_R_wrt_IMU_;
@@ -89,7 +96,7 @@ namespace akf_lio
         angvel_last_ = common::Zero3d;
         Lidar_T_wrt_IMU_ = common::Zero3d;
         Lidar_R_wrt_IMU_ = common::Eye3d;
-        last_imu_.reset(new sensor_msgs::Imu());
+        last_imu_ = std::make_shared<sensor_msgs::msg::Imu>();
     }
 
     ImuProcess::~ImuProcess() {}
@@ -103,7 +110,7 @@ namespace akf_lio
         init_iter_num_ = 1;
         v_imu_.clear();
         IMUpose_.clear();
-        last_imu_.reset(new sensor_msgs::Imu());
+        last_imu_ = std::make_shared<sensor_msgs::msg::Imu>();
         cur_pcl_un_.reset(new PointCloudType());
     }
 
@@ -189,14 +196,14 @@ namespace akf_lio
         /*** add the imu_ of the last frame-tail to the of current frame-head ***/
         auto v_imu = meas.imu_;
         v_imu.push_front(last_imu_);
-        const double &imu_beg_time = v_imu.front()->header.stamp.toSec();
-        const double &imu_end_time = v_imu.back()->header.stamp.toSec();
+        const double imu_beg_time = getImuTimestamp(v_imu.front());
+        const double imu_end_time = getImuTimestamp(v_imu.back());
         const double &pcl_beg_time = meas.lidar_bag_time_;
         const double &pcl_end_time = meas.lidar_end_time_;
 
         /*** sort point clouds by offset time ***/
         pcl_out = *(meas.lidar_);
-        sort(pcl_out.points.begin(), pcl_out.points.end(), time_list);
+        sort(pcl_out.points.begin(), pcl_out.points.end(), time_list_imu);
 
         /*** Initialize IMU pose ***/
         state_ikfom imu_state = kf_state.get_x();
@@ -251,7 +258,10 @@ namespace akf_lio
             auto &&head = *(it_imu);
             auto &&tail = *(it_imu + 1);
 
-            if (tail->header.stamp.toSec() < last_lidar_end_time_)
+            double tail_time = getImuTimestamp(tail);
+            double head_time = getImuTimestamp(head);
+
+            if (tail_time < last_lidar_end_time_)
             {
                 continue;
             }
@@ -265,13 +275,13 @@ namespace akf_lio
 
             acc_avr = acc_avr * common::G_m_s2 / mean_acc_.norm(); // - state_inout.ba;
 
-            if (head->header.stamp.toSec() < last_lidar_end_time_)
+            if (head_time < last_lidar_end_time_)
             {
-                dt = tail->header.stamp.toSec() - last_lidar_end_time_;
+                dt = tail_time - last_lidar_end_time_;
             }
             else
             {
-                dt = tail->header.stamp.toSec() - head->header.stamp.toSec();
+                dt = tail_time - head_time;
             }
 
             in.acc = acc_avr;
@@ -289,7 +299,7 @@ namespace akf_lio
                 acc_s_last_[i] += imu_state.grav[i];
             }
 
-            double &&offs_t = tail->header.stamp.toSec() - pcl_beg_time;
+            double offs_t = tail_time - pcl_beg_time;
             IMUpose_.emplace_back(common::set_pose6d(offs_t, acc_s_last_, angvel_last_, imu_state.vel, imu_state.pos,
                                                      imu_state.rot.toRotationMatrix()));
         }
@@ -359,7 +369,11 @@ namespace akf_lio
             return;
         }
 
-        ROS_ASSERT(meas.lidar_ != nullptr);
+        if (meas.lidar_ == nullptr)
+        {
+            RCLCPP_ERROR(rclcpp::get_logger("imu_process"), "Lidar pointer is null!");
+            return;
+        }
 
         if (imu_need_init_)
         {

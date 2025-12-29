@@ -1,16 +1,23 @@
 #ifndef AKF_LIO_LASER_MAPPING_H
 #define AKF_LIO_LASER_MAPPING_H
 
-#include <livox_ros_driver/CustomMsg.h>
-#include <nav_msgs/Path.h>
+#include <rclcpp/rclcpp.hpp>
+#include <nav_msgs/msg/path.hpp>
+#include <nav_msgs/msg/odometry.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <sensor_msgs/msg/imu.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <visualization_msgs/msg/marker.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
+#include <tf2_ros/transform_broadcaster.h>
+#include <tf2/LinearMath/Quaternion.h>
+#include <geometry_msgs/msg/transform_stamped.hpp>
+
 #include <pcl/filters/voxel_grid.h>
-#include <ros/ros.h>
-#include <sensor_msgs/PointCloud2.h>
 #include <condition_variable>
 #include <thread>
 
-#include <visualization_msgs/Marker.h>
-#include <visualization_msgs/MarkerArray.h>
+#include "akf_lio/msg/custom_msg.hpp"
 #include "imu_processing.hpp"
 #include "ivox3d/ivox3d.h"
 #include "options.h"
@@ -53,15 +60,15 @@ namespace akf_lio
             LOG(INFO) << "laser mapping deconstruct";
         }
 
-        /// init with ros
-        bool InitROS(ros::NodeHandle &nh);
+        /// init with ros2
+        bool InitROS(rclcpp::Node::SharedPtr node);
 
         void Run();
 
         // callbacks of lidar and imu
-        void StandardPCLCallBack(const sensor_msgs::PointCloud2::ConstPtr &msg);
-        void LivoxPCLCallBack(const livox_ros_driver::CustomMsg::ConstPtr &msg);
-        void IMUCallBack(const sensor_msgs::Imu::ConstPtr &msg_in);
+        void StandardPCLCallBack(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
+        void LivoxPCLCallBack(const akf_lio::msg::CustomMsg::SharedPtr msg);
+        void IMUCallBack(const sensor_msgs::msg::Imu::SharedPtr msg_in);
 
         // sync lidar with imu
         bool SyncPackages();
@@ -69,10 +76,10 @@ namespace akf_lio
         /// interface of mtk, customized obseravtion model
         void ObsModel(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_data);
         ////////////////////////////// debug save / show ////////////////////////////////////////////////////////////////
-        void PublishPath(const ros::Publisher pub_path);
-        void PublishOdometry(const ros::Publisher &pub_odom_aft_mapped);
+        void PublishPath();
+        void PublishOdometry();
         void PublishFrameWorld();
-        void PublishFrameRegWorld(const ros::Publisher &pub_laser_cloud_reg_world);
+        void PublishFrameRegWorld();
         void Savetrajectory(const std::string &traj_file);
         void VoxelGridDownsample(PointCloudType::Ptr &cloud_in, PointVector &cloud_down_reg);
         static bool time_list(const PointType2 &x, const PointType2 &y);
@@ -91,11 +98,15 @@ namespace akf_lio
 
         void MapIncremental();
 
-        void SubAndPubToROS(ros::NodeHandle &nh);
+        void SubAndPubToROS();
 
-        bool LoadParams(ros::NodeHandle &nh);
+        bool LoadParams();
 
     private:
+        /// ROS2 node
+        rclcpp::Node::SharedPtr node_;
+        std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
+
         /// modules
         IVoxType::Options ivox_options_;
         std::shared_ptr<IVoxType> ivox_ = nullptr;                   // localmap in ivox
@@ -123,27 +134,29 @@ namespace akf_lio
         PointVector plane_coef_; // plane coeffs
 
         /// ros pub and sub stuffs
-        ros::Subscriber sub_pcl_;
-        ros::Subscriber sub_imu_;
-        ros::Publisher pub_laser_cloud_world_;
-        ros::Publisher pub_laser_cloud_reg_world_;
-        ros::Publisher pub_odom_aft_mapped_;
-        ros::Publisher pub_path_, gt_pub_path_;
-        ros::Publisher point_cov_pub;
-        ros::Publisher pub_map;
-        ros::Publisher map_cov_pub;
+        rclcpp::Subscription<akf_lio::msg::CustomMsg>::SharedPtr sub_livox_pcl_;
+        rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_pcl_;
+        rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu_;
+        rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_laser_cloud_world_;
+        rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_laser_cloud_reg_world_;
+        rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub_odom_aft_mapped_;
+        rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pub_path_;
+        rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr gt_pub_path_;
+        rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr point_cov_pub_;
+        rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_map_;
+        rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr map_cov_pub_;
 
         std::mutex mtx_buffer_;
         std::deque<double> voxel_size_sliding_;
         double avg_voxel_size_;
         std::deque<double> time_buffer_;
         std::deque<PointCloudType::Ptr> lidar_buffer_;
-        std::deque<sensor_msgs::Imu::ConstPtr> imu_buffer_;
-        nav_msgs::Odometry odom_aft_mapped_;
+        std::deque<sensor_msgs::msg::Imu::SharedPtr> imu_buffer_;
+        nav_msgs::msg::Odometry odom_aft_mapped_;
 
         /// options
         std::ofstream fout_pre, fout_out;
-        visualization_msgs::MarkerArray pa_cov;
+        visualization_msgs::msg::MarkerArray pa_cov;
 
         double last_timestamp_lidar_ = 0;
         double lidar_end_time_ = 0;
@@ -194,8 +207,8 @@ namespace akf_lio
         int cur_iter = 0;
 
         PointCloudType::Ptr pcl_wait_save_{new PointCloudType()}; // debug save
-        nav_msgs::Path path_, gt_path_;
-        geometry_msgs::PoseStamped msg_body_pose_;
+        nav_msgs::msg::Path path_, gt_path_;
+        geometry_msgs::msg::PoseStamped msg_body_pose_;
 
         double init_uncertainty_ = 0.01;
     };

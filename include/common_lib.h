@@ -1,9 +1,8 @@
 #ifndef COMMON_LIB_H
 #define COMMON_LIB_H
 
-#include <eigen_conversions/eigen_msg.h>
-#include <nav_msgs/Odometry.h>
-#include <sensor_msgs/Imu.h>
+#include <nav_msgs/msg/odometry.hpp>
+#include <sensor_msgs/msg/imu.hpp>
 
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -13,7 +12,7 @@
 #include <boost/array.hpp>
 #include <unsupported/Eigen/ArpackSupport>
 
-#include "akf_lio/Pose6D.h"
+#include "akf_lio/msg/pose6_d.hpp"
 #include "options.h"
 #include "so3_math.h"
 
@@ -79,7 +78,7 @@ namespace akf_lio::common
 
     inline std::string DEBUG_FILE_DIR(const std::string &name) { return std::string(ROOT_DIR) + "Log/" + name; }
 
-    using Pose6D = akf_lio::Pose6D;
+    using Pose6D = akf_lio::msg::Pose6D;
     using V3D = Eigen::Vector3d;
     using V4D = Eigen::Vector4d;
     using V5D = Eigen::Matrix<double, 5, 1>;
@@ -111,7 +110,7 @@ namespace akf_lio::common
         double lidar_bag_time_ = 0;
         double lidar_end_time_ = 0;
         PointCloudType::Ptr lidar_ = nullptr;
-        std::deque<sensor_msgs::Imu::ConstPtr> imu_;
+        std::deque<sensor_msgs::msg::Imu::SharedPtr> imu_;
     };
 
     template <typename T>

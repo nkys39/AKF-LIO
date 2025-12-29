@@ -1,12 +1,13 @@
 #ifndef AKF_LIO_POINTCLOUD_PREPROCESS_H
 #define AKF_LIO_POINTCLOUD_PREPROCESS_H
 
-#include <livox_ros_driver/CustomMsg.h>
+#include <sensor_msgs/msg/point_cloud2.hpp>
 #include <pcl_conversions/pcl_conversions.h>
 
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 
+#include "akf_lio/msg/custom_msg.hpp"
 #include "common_lib.h"
 
 namespace velodyne_ros
@@ -80,8 +81,8 @@ namespace akf_lio
         ~PointCloudPreprocess() = default;
 
         /// processors
-        void Process(const livox_ros_driver::CustomMsg::ConstPtr &msg, PointCloudType::Ptr &pcl_out);
-        void Process(const sensor_msgs::PointCloud2::ConstPtr &msg, PointCloudType::Ptr &pcl_out);
+        void Process(const akf_lio::msg::CustomMsg::SharedPtr &msg, PointCloudType::Ptr &pcl_out);
+        void Process(const sensor_msgs::msg::PointCloud2::SharedPtr &msg, PointCloudType::Ptr &pcl_out);
         void Set(LidarType lid_type, double blind, int point_filter_num);
 
         // accessors
@@ -95,9 +96,9 @@ namespace akf_lio
         bool deskew_ = true;
 
     private:
-        void AviaHandler(const livox_ros_driver::CustomMsg::ConstPtr &msg);
-        void Oust64Handler(const sensor_msgs::PointCloud2::ConstPtr &msg);
-        void VelodyneHandler(const sensor_msgs::PointCloud2::ConstPtr &msg);
+        void AviaHandler(const akf_lio::msg::CustomMsg::SharedPtr &msg);
+        void Oust64Handler(const sensor_msgs::msg::PointCloud2::SharedPtr &msg);
+        void VelodyneHandler(const sensor_msgs::msg::PointCloud2::SharedPtr &msg);
 
         PointCloudType cloud_full_, cloud_out_;
 
