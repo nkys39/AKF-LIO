@@ -1615,7 +1615,165 @@ seamless_localization:
 
 ---
 
-## 12. 参考文献
+## 12. iVox 実装比較
+
+AKF-LIO、Faster-LIO、small_gicp における iVox（Incremental Voxel）の使い方の違いを整理する。
+
+### 12.1 各ライブラリの概要
+
+| 項目 | AKF-LIO | Faster-LIO | small_gicp |
+|------|---------|------------|------------|
+| ベース | Faster-LIO | オリジナル | オリジナル |
+| 目的 | LIO + Gaussian Map | LIO（高速化） | 点群レジストレーション |
+| iVox 役割 | Gaussian 格納 + 近傍探索 | 点群格納 + 近傍探索 | ボクセル化 + 共分散計算 |
+
+### 12.2 Faster-LIO の iVox
+
+```cpp
+// Faster-LIO: 点群を直接格納し、KNN 探索を高速化
+template <typename PointT>
+class IVox {
+    // ボクセル内に点群を格納
+    std::unordered_map<KeyType, NodeType> grids_map_;
+
+    // 近傍探索（ユークリッド距離）
+    bool GetClosestPoint(const PointT& pt, PointVector& closest_pt,
+                         int max_num, double max_range);
+};
+```
+
+**特徴:**
+- 点群を直接格納
+- LRU キャッシュで古いボクセルを削除
+- ユークリッド距離ベースの KNN
+- Point-to-Plane 残差計算は探索後に別途実行
+
+### 12.3 AKF-LIO の iVox（Gaussian 拡張）
+
+```cpp
+// AKF-LIO: Gaussian 情報を持つ点を格納
+struct PointXYZIRTtimeRing {
+    PCL_ADD_POINT4D;
+    float intensity;
+    double time;
+
+    // Gaussian 情報
+    Eigen::Vector3d mean;
+    Eigen::Matrix3d cov;
+    int pt_num;
+    int use_num;
+    double uncertainty;  // 残差ベース
+};
+
+// 探索時にマハラノビス距離を使用
+void KNNPointMAL(std::vector<DistPoint>& candidates,
+                 const PointType& pt, int max_num, double max_range) {
+    for (auto& p : points_) {
+        // マハラノビス距離で評価
+        double mal_dist = computeMahalanobis(pt, p);
+        if (mal_dist < threshold) {
+            candidates.push_back({p, mal_dist});
+        }
+    }
+}
+```
+
+**特徴:**
+- 点に Gaussian 情報（共分散、uncertainty）を付加
+- **マハラノビス距離**による対応点探索
+- Pseudo-merge で近い Gaussian を統合
+- 残差ベースの uncertainty 更新
+
+### 12.4 small_gicp の iVox（GaussianVoxelMap）
+
+```cpp
+// small_gicp: ボクセル単位で共分散を計算
+class GaussianVoxelMap {
+    struct VoxelInfo {
+        Eigen::Vector4d mean;      // ボクセル内点群の平均
+        Eigen::Matrix4d cov;       // ボクセル内点群の共分散
+        int num_points;            // 点数
+    };
+
+    std::unordered_map<VoxelKey, VoxelInfo> voxels_;
+
+    // VGICP 用の分布を取得
+    bool get_voxel(const Eigen::Vector4d& pt, VoxelInfo* voxel) const;
+};
+```
+
+**特徴:**
+- ボクセル = 1 Gaussian（ボクセル内の統計量）
+- レジストレーション専用（LIO なし）
+- ボクセル解像度が Gaussian のサイズを決定
+- 動的更新なし（バッチ処理）
+
+### 12.5 主要な違いまとめ
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        iVox の使い方比較                                 │
+├───────────────┬─────────────────┬─────────────────┬─────────────────────┤
+│               │  Faster-LIO     │  AKF-LIO        │  small_gicp         │
+├───────────────┼─────────────────┼─────────────────┼─────────────────────┤
+│ 格納データ     │ 点群            │ Gaussian 点     │ ボクセル統計量       │
+├───────────────┼─────────────────┼─────────────────┼─────────────────────┤
+│ 距離関数       │ ユークリッド     │ マハラノビス     │ ユークリッド         │
+├───────────────┼─────────────────┼─────────────────┼─────────────────────┤
+│ 共分散計算     │ 探索後に毎回    │ 事前計算+更新    │ ボクセル構築時       │
+├───────────────┼─────────────────┼─────────────────┼─────────────────────┤
+│ 動的更新       │ LRU 削除のみ    │ Pseudo-merge    │ なし                │
+│               │                 │ + Uncertainty   │                     │
+├───────────────┼─────────────────┼─────────────────┼─────────────────────┤
+│ Gaussian 粒度  │ N/A             │ 点単位          │ ボクセル単位         │
+├───────────────┼─────────────────┼─────────────────┼─────────────────────┤
+│ 用途          │ LIO             │ LIO + Mapping   │ Registration        │
+└───────────────┴─────────────────┴─────────────────┴─────────────────────┘
+```
+
+### 12.6 提案手法での統合
+
+本設計では、AKF-LIO の利点を small_gicp に取り込む：
+
+```cpp
+// 提案: small_gicp + AKF-LIO 式 Gaussian
+class GaussianVoxelMap {
+    struct GaussianPoint {
+        Eigen::Vector3d mean;
+        Eigen::Matrix3d cov;
+        Eigen::Vector3d normal;
+        int pt_num;
+        int use_num;
+        double uncertainty;    // AKF-LIO から
+        double planarity;
+    };
+
+    // ボクセル内に複数 Gaussian を許可（AKF-LIO 式）
+    std::unordered_map<KeyType, std::vector<GaussianPoint>> voxels_;
+
+    // マハラノビス距離による探索（AKF-LIO から）
+    void getGaussiansWithMahalanobis(
+        const Eigen::Vector3d& query,
+        double threshold,
+        std::vector<GaussianPoint>& results);
+
+    // Pseudo-merge（AKF-LIO から）
+    void applyPseudoMerge(double mahalanobis_threshold);
+
+    // Uncertainty 更新（AKF-LIO から）
+    void updateUncertainty(size_t idx, double residual);
+};
+```
+
+**統合のポイント:**
+1. **点単位 Gaussian**: small_gicp のボクセル単位ではなく、AKF-LIO の点単位 Gaussian を採用
+2. **マハラノビス距離**: 対応点探索に共分散を考慮
+3. **Pseudo-merge**: 近い Gaussian を統合してノイズ耐性向上
+4. **Uncertainty 追跡**: 残差ベースの信頼度で移動体を間接的に除去
+
+---
+
+## 13. 参考文献
 
 - [AKF-LIO: LiDAR-Inertial Odometry with Gaussian Map by Adaptive Kalman Filter](https://arxiv.org/pdf/2503.06891)
 - [Faster-LIO: Lightweight Tightly Coupled Lidar-inertial Odometry using Parallel Sparse Incremental Voxels](https://github.com/gaoxiang12/faster-lio)
