@@ -1,6 +1,8 @@
 #include <gflags/gflags.h>
 #include <unistd.h>
 #include <csignal>
+#include <vector>
+#include <string>
 
 #include "laser_mapping.h"
 
@@ -18,14 +20,25 @@ void SigHandle(int sig)
 
 int main(int argc, char **argv)
 {
-    // Initialize ROS2 first - this removes ROS2-specific arguments from argc/argv
+    // Initialize ROS2 first
     rclcpp::init(argc, argv);
+
+    // Remove ROS2-specific arguments from argc/argv for gflags
+    std::vector<std::string> non_ros_args = rclcpp::remove_ros_arguments(argc, argv);
+
+    // Convert to argc/argv format for gflags
+    std::vector<char*> filtered_argv;
+    for (auto& arg : non_ros_args) {
+        filtered_argv.push_back(arg.data());
+    }
+    int filtered_argc = static_cast<int>(filtered_argv.size());
+    char** filtered_argv_ptr = filtered_argv.data();
 
     // Now parse remaining arguments with gflags
     FLAGS_stderrthreshold = google::INFO;
     FLAGS_colorlogtostderr = true;
-    google::InitGoogleLogging(argv[0]);
-    google::ParseCommandLineFlags(&argc, &argv, true);
+    google::InitGoogleLogging(filtered_argv_ptr[0]);
+    google::ParseCommandLineFlags(&filtered_argc, &filtered_argv_ptr, false);
 
     auto node = std::make_shared<rclcpp::Node>("laserMapping");
 
