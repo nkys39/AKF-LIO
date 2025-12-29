@@ -18,14 +18,13 @@ void SigHandle(int sig)
 
 int main(int argc, char **argv)
 {
+    // Initialize ROS2 first - this removes ROS2-specific arguments from argc/argv
+    rclcpp::init(argc, argv);
+
+    // Now parse remaining arguments with gflags
     FLAGS_stderrthreshold = google::INFO;
     FLAGS_colorlogtostderr = true;
     google::InitGoogleLogging(argv[0]);
-
-    // Initialize ROS2 first (it will consume --ros-args and leave gflags args)
-    rclcpp::init(argc, argv);
-
-    // Parse remaining gflags
     google::ParseCommandLineFlags(&argc, &argv, true);
 
     auto node = std::make_shared<rclcpp::Node>("laserMapping");
