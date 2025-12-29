@@ -21,10 +21,14 @@ int main(int argc, char **argv)
     FLAGS_stderrthreshold = google::INFO;
     FLAGS_colorlogtostderr = true;
     google::InitGoogleLogging(argv[0]);
+
+    // Initialize ROS2 first (it will consume --ros-args and leave gflags args)
+    rclcpp::init(argc, argv);
+
+    // Parse remaining gflags
     google::ParseCommandLineFlags(&argc, &argv, true);
 
-    rclcpp::init(argc, argv);
-    auto node = std::make_shared<rclcpp::Node>("akf_lio");
+    auto node = std::make_shared<rclcpp::Node>("laserMapping");
 
     laser_mapping = std::make_shared<akf_lio::LaserMapping>();
     laser_mapping->InitROS(node);

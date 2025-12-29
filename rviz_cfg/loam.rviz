@@ -1,5 +1,5 @@
 Panels:
-  - Class: rviz/Displays
+  - Class: rviz_common/Displays
     Help Height: 0
     Name: Displays
     Property Tree Widget:
@@ -13,21 +13,21 @@ Panels:
         - /map_gaussian1/Namespaces1
       Splitter Ratio: 0.6432926654815674
     Tree Height: 1291
-  - Class: rviz/Selection
+  - Class: rviz_common/Selection
     Name: Selection
-  - Class: rviz/Tool Properties
+  - Class: rviz_common/Tool Properties
     Expanded:
       - /2D Pose Estimate1
       - /2D Nav Goal1
       - /Publish Point1
     Name: Tool Properties
     Splitter Ratio: 0.5886790156364441
-  - Class: rviz/Views
+  - Class: rviz_common/Views
     Expanded:
       - /Current View1
     Name: Views
     Splitter Ratio: 0.5
-  - Class: rviz/Time
+  - Class: rviz_common/Time
     Name: Time
     SyncMode: 0
     SyncSource: cur_reg
@@ -40,7 +40,7 @@ Visualization Manager:
   Displays:
     - Alpha: 1
       Cell Size: 1
-      Class: rviz/Grid
+      Class: rviz_default_plugins/Grid
       Color: 160; 160; 164
       Enabled: false
       Line Style:
@@ -57,7 +57,7 @@ Visualization Manager:
       Reference Frame: <Fixed Frame>
       Value: false
     - Alpha: 1
-      Class: rviz/Axes
+      Class: rviz_default_plugins/Axes
       Enabled: false
       Length: 2
       Name: Axes
@@ -65,7 +65,7 @@ Visualization Manager:
       Reference Frame: <Fixed Frame>
       Show Trail: false
       Value: false
-    - Class: rviz/Group
+    - Class: rviz_common/Group
       Displays:
         - Alpha: 1
           Autocompute Intensity Bounds: false
@@ -75,7 +75,7 @@ Visualization Manager:
             Value: true
           Axis: Z
           Channel Name: normal_x
-          Class: rviz/PointCloud2
+          Class: rviz_default_plugins/PointCloud2
           Color: 255; 255; 255
           Color Transformer: FlatColor
           Decay Time: 0
@@ -105,7 +105,7 @@ Visualization Manager:
             Value: true
           Axis: Z
           Channel Name: intensity
-          Class: rviz/PointCloud2
+          Class: rviz_default_plugins/PointCloud2
           Color: 255; 255; 255
           Color Transformer: Intensity
           Decay Time: 1000
@@ -133,7 +133,7 @@ Visualization Manager:
             Value: true
           Axis: Z
           Channel Name: intensity
-          Class: rviz/PointCloud2
+          Class: rviz_default_plugins/PointCloud2
           Color: 255; 255; 255
           Color Transformer: Intensity
           Decay Time: 100
@@ -161,7 +161,7 @@ Visualization Manager:
             Value: true
           Axis: Z
           Channel Name: normal_z
-          Class: rviz/PointCloud2
+          Class: rviz_default_plugins/PointCloud2
           Color: 255; 0; 0
           Color Transformer: Intensity
           Decay Time: 0
@@ -185,10 +185,10 @@ Visualization Manager:
           Value: true
       Enabled: true
       Name: mapping
-    - Class: rviz/Group
+    - Class: rviz_common/Group
       Displays:
         - Angle Tolerance: 0.5
-          Class: rviz/Odometry
+          Class: rviz_default_plugins/Odometry
           Covariance:
             Orientation:
               Alpha: 0
@@ -225,7 +225,7 @@ Visualization Manager:
       Enabled: true
       Name: Odometry
     - Alpha: 1
-      Class: rviz/Axes
+      Class: rviz_default_plugins/Axes
       Enabled: true
       Length: 0.699999988079071
       Name: Axes
@@ -235,7 +235,7 @@ Visualization Manager:
       Value: true
     - Alpha: 0
       Buffer Length: 2
-      Class: rviz/Path
+      Class: rviz_default_plugins/Path
       Color: 255; 255; 255
       Enabled: true
       Head Diameter: 0
@@ -257,7 +257,7 @@ Visualization Manager:
       Topic: /path
       Unreliable: false
       Value: true
-    - Class: rviz/MarkerArray
+    - Class: rviz_default_plugins/MarkerArray
       Enabled: false
       Marker Topic: /scan_gaussian_reg
       Name: scan_gaussian_reg
@@ -265,7 +265,7 @@ Visualization Manager:
         {}
       Queue Size: 0
       Value: false
-    - Class: rviz/MarkerArray
+    - Class: rviz_default_plugins/MarkerArray
       Enabled: true
       Marker Topic: /map_gaussian
       Name: map_gaussian
@@ -281,26 +281,26 @@ Visualization Manager:
     Frame Rate: 10
   Name: root
   Tools:
-    - Class: rviz/Interact
+    - Class: rviz_default_plugins/Interact
       Hide Inactive Objects: true
-    - Class: rviz/MoveCamera
-    - Class: rviz/Select
-    - Class: rviz/FocusCamera
-    - Class: rviz/Measure
-    - Class: rviz/SetInitialPose
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+    - Class: rviz_default_plugins/SetInitialPose
       Theta std deviation: 0.2617993950843811
       Topic: /initialpose
       X std deviation: 0.5
       Y std deviation: 0.5
-    - Class: rviz/SetGoal
+    - Class: rviz_default_plugins/SetGoal
       Topic: /move_base_simple/goal
-    - Class: rviz/PublishPoint
+    - Class: rviz_default_plugins/PublishPoint
       Single click: true
       Topic: /clicked_point
   Value: true
   Views:
     Current:
-      Class: rviz/Orbit
+      Class: rviz_default_plugins/Orbit
       Distance: 36.56504821777344
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
@@ -321,7 +321,7 @@ Visualization Manager:
       Target Frame: camera_init
       Yaw: 2.895395278930664
     Saved:
-      - Class: rviz/ThirdPersonFollower
+      - Class: rviz_default_plugins/ThirdPersonFollower
         Distance: 1
         Enable Stereo Rendering:
           Stereo Eye Separation: 0.05999999865889549
