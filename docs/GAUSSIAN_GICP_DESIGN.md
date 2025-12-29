@@ -1003,7 +1003,619 @@ gaussian_gicp:
 
 ---
 
-## 10. 参考文献
+# Advanced Features
+
+---
+
+## 10. 変化検出（移動体・新規物体）
+
+残差ベースのクラスタリングにより、移動体および既存マップにない新規物体を検出する。
+
+### 10.1 点群分類
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  入力: リアルタイム点群 + Gaussian Map                           │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  各点について:                                                    │
+│  ┌─────────────────────────────────────────────────────────────┐ │
+│  │ 対応あり & 低残差  → MATCHED（既存環境）                      │ │
+│  │ 対応あり & 高残差  → MOVING_OBJECT（移動体）                  │ │
+│  │ 対応なし          → NEW_OBJECT（新規物体）                   │ │
+│  │ マップ範囲外       → OUT_OF_MAP                              │ │
+│  └─────────────────────────────────────────────────────────────┘ │
+│                         ↓                                        │
+│  高残差 + 対応なし の点をクラスタリング                           │
+│                         ↓                                        │
+│  時間的一貫性でフィルタ（ノイズ除去）                             │
+│                         ↓                                        │
+│  出力: 移動体 / 新規物体 のクラスタ                               │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 10.2 データ構造
+
+```cpp
+struct PointClassification {
+    enum class Category {
+        MATCHED,           // 既存マップと一致
+        MOVING_OBJECT,     // 移動体（高残差）
+        NEW_OBJECT,        // 新規物体（マップにない）
+        OUT_OF_MAP         // マップ範囲外
+    };
+
+    int point_idx;
+    Category category;
+    double confidence;
+    double residual;
+    Eigen::Vector3d position;
+};
+
+struct DetectedCluster {
+    pcl::PointCloud<pcl::PointXYZ> points;
+    Eigen::Vector3d centroid;
+    Eigen::Vector3d bbox_min, bbox_max;
+    PointClassification::Category type;
+    double confidence;
+    int track_id;
+    int consistent_frames;
+};
+```
+
+### 10.3 変化検出クラス
+
+```cpp
+class ChangeDetector {
+public:
+    struct Config {
+        // 残差閾値
+        double match_residual_threshold = 0.1;     // マッチ判定
+        double moving_residual_threshold = 0.3;    // 移動体判定
+        double search_radius = 2.0;                // 対応探索半径
+
+        // クラスタリング
+        double cluster_tolerance = 0.5;            // クラスタ間距離
+        int min_cluster_size = 10;                 // 最小点数
+
+        // 時間的フィルタ
+        int min_consistent_frames = 3;             // 最小一貫フレーム数
+        double tracking_distance_threshold = 1.0;  // トラッキング距離
+
+        // マップ境界
+        double map_boundary_margin = 1.0;
+    };
+
+    // 点群を分類
+    std::vector<PointClassification> classifyPoints(
+        const pcl::PointCloud<pcl::PointXYZ>& scan,
+        const Eigen::Matrix4d& pose);
+
+    // クラスタを抽出
+    std::vector<DetectedCluster> detectClusters(
+        const std::vector<PointClassification>& classifications,
+        const pcl::PointCloud<pcl::PointXYZ>& scan);
+
+    // 時間的トラッキング更新
+    void updateTracking(const std::vector<DetectedCluster>& clusters,
+                        double timestamp);
+
+    // 確定した検出結果を取得
+    std::vector<DetectedCluster> getConfirmedDetections();
+
+private:
+    GaussianVoxelMap* map_;
+    Config config_;
+    std::vector<Track> tracks_;
+};
+```
+
+### 10.4 分類アルゴリズム
+
+```cpp
+std::vector<PointClassification> ChangeDetector::classifyPoints(
+    const pcl::PointCloud<pcl::PointXYZ>& scan,
+    const Eigen::Matrix4d& pose) {
+
+    std::vector<PointClassification> results;
+    results.reserve(scan.size());
+
+    Eigen::Matrix3d R = pose.block<3,3>(0,0);
+    Eigen::Vector3d t = pose.block<3,1>(0,3);
+
+    for (size_t i = 0; i < scan.size(); ++i) {
+        Eigen::Vector3d pt_local(scan.points[i].x,
+                                  scan.points[i].y,
+                                  scan.points[i].z);
+        Eigen::Vector3d pt_world = R * pt_local + t;
+
+        PointClassification cls;
+        cls.point_idx = i;
+        cls.position = pt_world;
+
+        // 1. マップ範囲チェック
+        if (!map_->isInBounds(pt_world, config_.map_boundary_margin)) {
+            cls.category = PointClassification::Category::OUT_OF_MAP;
+            cls.confidence = 1.0;
+            cls.residual = -1.0;
+            results.push_back(cls);
+            continue;
+        }
+
+        // 2. 近傍 Gaussian を探索
+        std::vector<GaussianPoint> nearby;
+        map_->getGaussiansInRadius(pt_world, config_.search_radius, nearby);
+
+        if (nearby.empty()) {
+            // 対応なし → 新規物体
+            cls.category = PointClassification::Category::NEW_OBJECT;
+            cls.confidence = 0.9;
+            cls.residual = config_.search_radius;
+            results.push_back(cls);
+            continue;
+        }
+
+        // 3. 最近傍との残差を計算
+        double min_residual = std::numeric_limits<double>::max();
+        for (const auto& g : nearby) {
+            // Point-to-plane 残差
+            Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(g.cov);
+            Eigen::Vector3d normal = solver.eigenvectors().col(0);
+            double residual = std::abs(normal.dot(pt_world - g.mean));
+            min_residual = std::min(min_residual, residual);
+        }
+
+        cls.residual = min_residual;
+
+        // 4. 残差に基づいて分類
+        if (min_residual < config_.match_residual_threshold) {
+            cls.category = PointClassification::Category::MATCHED;
+            cls.confidence = 1.0 - min_residual / config_.match_residual_threshold;
+        } else if (min_residual < config_.moving_residual_threshold) {
+            cls.category = PointClassification::Category::MOVING_OBJECT;
+            cls.confidence = 0.7;
+        } else {
+            cls.category = PointClassification::Category::NEW_OBJECT;
+            cls.confidence = 0.9;
+        }
+
+        results.push_back(cls);
+    }
+
+    return results;
+}
+```
+
+### 10.5 クラスタリングとトラッキング
+
+```cpp
+std::vector<DetectedCluster> ChangeDetector::detectClusters(
+    const std::vector<PointClassification>& classifications,
+    const pcl::PointCloud<pcl::PointXYZ>& scan) {
+
+    // 1. 非マッチ点を抽出
+    pcl::PointCloud<pcl::PointXYZ> candidate_points;
+    std::vector<PointClassification::Category> point_types;
+
+    for (const auto& cls : classifications) {
+        if (cls.category == PointClassification::Category::MOVING_OBJECT ||
+            cls.category == PointClassification::Category::NEW_OBJECT) {
+            candidate_points.push_back(scan.points[cls.point_idx]);
+            point_types.push_back(cls.category);
+        }
+    }
+
+    if (candidate_points.size() < config_.min_cluster_size) {
+        return {};
+    }
+
+    // 2. ユークリッドクラスタリング
+    pcl::search::KdTree<pcl::PointXYZ>::Ptr tree(
+        new pcl::search::KdTree<pcl::PointXYZ>);
+    tree->setInputCloud(candidate_points.makeShared());
+
+    std::vector<pcl::PointIndices> cluster_indices;
+    pcl::EuclideanClusterExtraction<pcl::PointXYZ> ec;
+    ec.setClusterTolerance(config_.cluster_tolerance);
+    ec.setMinClusterSize(config_.min_cluster_size);
+    ec.setMaxClusterSize(10000);
+    ec.setSearchMethod(tree);
+    ec.setInputCloud(candidate_points.makeShared());
+    ec.extract(cluster_indices);
+
+    // 3. クラスタを構造体に変換
+    std::vector<DetectedCluster> clusters;
+    for (const auto& indices : cluster_indices) {
+        DetectedCluster cluster;
+
+        // 点群とタイプの集計
+        int moving_count = 0, new_count = 0;
+        for (int idx : indices.indices) {
+            cluster.points.push_back(candidate_points.points[idx]);
+            if (point_types[idx] == PointClassification::Category::MOVING_OBJECT) {
+                moving_count++;
+            } else {
+                new_count++;
+            }
+        }
+
+        // 多数決でタイプ決定
+        cluster.type = (moving_count > new_count) ?
+            PointClassification::Category::MOVING_OBJECT :
+            PointClassification::Category::NEW_OBJECT;
+
+        // 重心と BoundingBox
+        Eigen::Vector3d sum = Eigen::Vector3d::Zero();
+        cluster.bbox_min = Eigen::Vector3d::Constant(
+            std::numeric_limits<double>::max());
+        cluster.bbox_max = Eigen::Vector3d::Constant(
+            std::numeric_limits<double>::lowest());
+
+        for (const auto& pt : cluster.points) {
+            Eigen::Vector3d p(pt.x, pt.y, pt.z);
+            sum += p;
+            cluster.bbox_min = cluster.bbox_min.cwiseMin(p);
+            cluster.bbox_max = cluster.bbox_max.cwiseMax(p);
+        }
+        cluster.centroid = sum / cluster.points.size();
+
+        cluster.confidence = static_cast<double>(
+            std::max(moving_count, new_count)) / indices.indices.size();
+
+        clusters.push_back(cluster);
+    }
+
+    return clusters;
+}
+```
+
+### 10.6 出力インターフェース
+
+```cpp
+void ChangeDetector::publishResults(
+    const std::vector<PointClassification>& classifications,
+    const std::vector<DetectedCluster>& clusters,
+    const pcl::PointCloud<pcl::PointXYZ>& scan,
+    const rclcpp::Time& stamp) {
+
+    // 1. 分類済み点群（色分け）
+    pcl::PointCloud<pcl::PointXYZRGB> colored_cloud;
+    for (const auto& cls : classifications) {
+        pcl::PointXYZRGB pt;
+        pt.x = scan.points[cls.point_idx].x;
+        pt.y = scan.points[cls.point_idx].y;
+        pt.z = scan.points[cls.point_idx].z;
+
+        switch (cls.category) {
+            case PointClassification::Category::MATCHED:
+                pt.r = 0; pt.g = 255; pt.b = 0;    // 緑
+                break;
+            case PointClassification::Category::MOVING_OBJECT:
+                pt.r = 255; pt.g = 0; pt.b = 0;    // 赤
+                break;
+            case PointClassification::Category::NEW_OBJECT:
+                pt.r = 0; pt.g = 0; pt.b = 255;    // 青
+                break;
+            case PointClassification::Category::OUT_OF_MAP:
+                pt.r = 128; pt.g = 128; pt.b = 128; // 灰
+                break;
+        }
+        colored_cloud.push_back(pt);
+    }
+
+    sensor_msgs::msg::PointCloud2 cloud_msg;
+    pcl::toROSMsg(colored_cloud, cloud_msg);
+    cloud_msg.header.stamp = stamp;
+    cloud_msg.header.frame_id = "map";
+    classified_cloud_pub_->publish(cloud_msg);
+
+    // 2. 検出クラスタの BoundingBox
+    vision_msgs::msg::Detection3DArray detections;
+    detections.header.stamp = stamp;
+    detections.header.frame_id = "map";
+
+    for (const auto& cluster : clusters) {
+        if (cluster.consistent_frames < config_.min_consistent_frames) continue;
+
+        vision_msgs::msg::Detection3D det;
+        det.bbox.center.position.x = cluster.centroid.x();
+        det.bbox.center.position.y = cluster.centroid.y();
+        det.bbox.center.position.z = cluster.centroid.z();
+        det.bbox.size.x = cluster.bbox_max.x() - cluster.bbox_min.x();
+        det.bbox.size.y = cluster.bbox_max.y() - cluster.bbox_min.y();
+        det.bbox.size.z = cluster.bbox_max.z() - cluster.bbox_min.z();
+
+        vision_msgs::msg::ObjectHypothesisWithPose hyp;
+        hyp.hypothesis.class_id =
+            (cluster.type == PointClassification::Category::MOVING_OBJECT) ?
+            "moving" : "new";
+        hyp.hypothesis.score = cluster.confidence;
+        det.results.push_back(hyp);
+
+        detections.detections.push_back(det);
+    }
+
+    detections_pub_->publish(detections);
+}
+```
+
+---
+
+## 11. シームレスローカライゼーション
+
+マップ内外を問わず連続的に自己位置推定を行う。
+
+### 11.1 アーキテクチャ
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Seamless Localization                         │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  [LiDAR点群] → [LIO オドメトリ] ─────────────────┐               │
+│                      ↓                          │               │
+│              [Gaussian Map 照合]                 │               │
+│                      ↓                          ↓               │
+│              ┌──────────────────┐      ┌──────────────┐         │
+│              │  マップ内         │      │  マップ外    │         │
+│              │  (GICP マッチング) │      │  (LIO のみ)  │         │
+│              └────────┬─────────┘      └──────┬───────┘         │
+│                       ↓                        ↓                │
+│              ┌──────────────────────────────────┐               │
+│              │     適応的フュージョン            │               │
+│              │  pose = α * map_pose             │               │
+│              │       + (1-α) * lio_pose         │               │
+│              │  (α = map_confidence)            │               │
+│              └──────────────────────────────────┘               │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 11.2 データ構造
+
+```cpp
+struct LocalizationResult {
+    Eigen::Matrix4d pose;
+    Eigen::Matrix<double, 6, 6> covariance;
+
+    double map_confidence;      // 0.0 (マップ外) ~ 1.0 (マップ内)
+    bool in_map;
+
+    int matched_points;
+    int total_points;
+
+    enum class Mode {
+        MAP_BASED,      // マップベースローカライゼーション
+        LIO_ONLY,       // LIO のみ
+        TRANSITIONING   // 遷移中
+    } mode;
+};
+
+struct MapBoundaryStatus {
+    enum class Zone {
+        INSIDE,         // 完全にマップ内
+        BOUNDARY,       // 境界付近
+        OUTSIDE,        // 完全にマップ外
+        RETURNING       // マップに戻りつつある
+    } zone;
+
+    double coverage_ratio;
+    Eigen::Vector3d nearest_map_point;
+};
+```
+
+### 11.3 シームレスローカライザ
+
+```cpp
+class SeamlessLocalizer {
+public:
+    struct Config {
+        // マップ内判定
+        double map_coverage_threshold = 0.3;    // マップ内判定閾値
+        double min_match_ratio = 0.2;           // 最小マッチ率
+
+        // 遷移制御
+        double smooth_transition_rate = 0.1;    // 信頼度変化率
+        double hysteresis_margin = 0.05;        // ヒステリシス
+
+        // 不確実性
+        double uncertainty_scale_outside = 2.0; // マップ外の不確実性スケール
+
+        // マップ拡張（オプション）
+        bool enable_map_extension = false;
+        double min_lio_confidence = 0.8;
+    };
+
+    LocalizationResult localize(
+        const pcl::PointCloud<pcl::PointXYZ>& scan,
+        const Eigen::Matrix4d& lio_pose,
+        const Eigen::Matrix<double, 6, 6>& lio_covariance);
+
+private:
+    // 姿勢のフュージョン（SE3 上での補間）
+    Eigen::Matrix4d fusePoses(
+        const Eigen::Matrix4d& map_pose,
+        const Eigen::Matrix4d& lio_pose,
+        double alpha);
+
+    // 共分散のフュージョン（情報行列で加重平均）
+    Eigen::Matrix<double, 6, 6> fuseCovariances(
+        const Eigen::Matrix<double, 6, 6>& map_cov,
+        const Eigen::Matrix<double, 6, 6>& lio_cov,
+        double alpha);
+
+    // マップ境界状態の判定
+    MapBoundaryStatus checkMapBoundary(
+        const Eigen::Vector3d& position,
+        const pcl::PointCloud<pcl::PointXYZ>& scan);
+
+    std::shared_ptr<GaussianGICP> gaussian_gicp_;
+    Config config_;
+    double map_confidence_ = 0.0;  // 状態として保持
+};
+```
+
+### 11.4 ローカライゼーションアルゴリズム
+
+```cpp
+LocalizationResult SeamlessLocalizer::localize(
+    const pcl::PointCloud<pcl::PointXYZ>& scan,
+    const Eigen::Matrix4d& lio_pose,
+    const Eigen::Matrix<double, 6, 6>& lio_covariance) {
+
+    LocalizationResult result;
+    result.total_points = scan.size();
+
+    // 1. Gaussian Map とのマッチングを試行
+    auto gicp_result = gaussian_gicp_->align(scan, lio_pose);
+    result.matched_points = gicp_result.num_correspondences;
+
+    // 2. マップカバレッジ（マッチ率）を計算
+    double match_ratio = static_cast<double>(gicp_result.num_correspondences) /
+                        static_cast<double>(scan.size());
+
+    // 3. マップ内/外の判定（ヒステリシス付き）
+    double threshold = config_.map_coverage_threshold;
+    if (result.in_map) {
+        threshold -= config_.hysteresis_margin;  // マップ内なら閾値を下げる
+    } else {
+        threshold += config_.hysteresis_margin;  // マップ外なら閾値を上げる
+    }
+
+    result.in_map = (match_ratio >= threshold) && gicp_result.converged;
+
+    // 4. 信頼度の滑らかな更新
+    double target_confidence = result.in_map ?
+        std::min(1.0, match_ratio / config_.map_coverage_threshold) : 0.0;
+
+    map_confidence_ += config_.smooth_transition_rate *
+                       (target_confidence - map_confidence_);
+    map_confidence_ = std::clamp(map_confidence_, 0.0, 1.0);
+    result.map_confidence = map_confidence_;
+
+    // 5. モード決定
+    if (map_confidence_ > 0.8) {
+        result.mode = LocalizationResult::Mode::MAP_BASED;
+    } else if (map_confidence_ < 0.2) {
+        result.mode = LocalizationResult::Mode::LIO_ONLY;
+    } else {
+        result.mode = LocalizationResult::Mode::TRANSITIONING;
+    }
+
+    // 6. 姿勢と共分散のフュージョン
+    if (map_confidence_ > 0.01 && gicp_result.converged) {
+        result.pose = fusePoses(
+            gicp_result.transformation,
+            lio_pose,
+            map_confidence_);
+
+        result.covariance = fuseCovariances(
+            gicp_result.covariance,
+            lio_covariance,
+            map_confidence_);
+    } else {
+        // 完全にマップ外
+        result.pose = lio_pose;
+        result.covariance = lio_covariance * config_.uncertainty_scale_outside;
+    }
+
+    return result;
+}
+```
+
+### 11.5 姿勢フュージョン
+
+```cpp
+Eigen::Matrix4d SeamlessLocalizer::fusePoses(
+    const Eigen::Matrix4d& map_pose,
+    const Eigen::Matrix4d& lio_pose,
+    double alpha) {
+
+    // 回転: 球面線形補間 (SLERP)
+    Eigen::Quaterniond q_map(map_pose.block<3,3>(0,0));
+    Eigen::Quaterniond q_lio(lio_pose.block<3,3>(0,0));
+    Eigen::Quaterniond q_fused = q_lio.slerp(alpha, q_map);
+
+    // 並進: 線形補間
+    Eigen::Vector3d t_fused =
+        (1.0 - alpha) * lio_pose.block<3,1>(0,3) +
+        alpha * map_pose.block<3,1>(0,3);
+
+    Eigen::Matrix4d fused = Eigen::Matrix4d::Identity();
+    fused.block<3,3>(0,0) = q_fused.toRotationMatrix();
+    fused.block<3,1>(0,3) = t_fused;
+
+    return fused;
+}
+
+Eigen::Matrix<double, 6, 6> SeamlessLocalizer::fuseCovariances(
+    const Eigen::Matrix<double, 6, 6>& map_cov,
+    const Eigen::Matrix<double, 6, 6>& lio_cov,
+    double alpha) {
+
+    // 情報行列（逆共分散）での加重平均
+    Eigen::Matrix<double, 6, 6> map_info = map_cov.inverse();
+    Eigen::Matrix<double, 6, 6> lio_info = lio_cov.inverse();
+
+    Eigen::Matrix<double, 6, 6> fused_info =
+        alpha * map_info + (1.0 - alpha) * lio_info;
+
+    return fused_info.inverse();
+}
+```
+
+### 11.6 オンラインマップ拡張（オプション）
+
+```cpp
+void SeamlessLocalizer::extendMap(
+    const pcl::PointCloud<pcl::PointXYZ>& scan,
+    const Eigen::Matrix4d& pose,
+    const LocalizationResult& loc_result) {
+
+    if (!config_.enable_map_extension) return;
+    if (loc_result.in_map) return;
+    if (lio_confidence_ < config_.min_lio_confidence) return;
+
+    // 新規エリアを Gaussian Map に追加
+    pcl::PointCloud<pcl::PointXYZ> transformed;
+    pcl::transformPointCloud(scan, transformed, pose);
+
+    map_builder_->addPointCloud(transformed, pose);
+
+    RCLCPP_INFO(node_->get_logger(),
+        "Extended map: +%zu points at (%.1f, %.1f)",
+        scan.size(), pose(0,3), pose(1,3));
+}
+```
+
+### 11.7 パラメータ設定
+
+```yaml
+seamless_localization:
+  ros__parameters:
+    # マップ内判定
+    map_coverage_threshold: 0.3
+    min_match_ratio: 0.2
+    hysteresis_margin: 0.05
+
+    # 遷移制御
+    smooth_transition_rate: 0.1
+
+    # 不確実性
+    uncertainty_scale_outside: 2.0
+
+    # マップ拡張
+    enable_map_extension: false
+    min_lio_confidence: 0.8
+
+    # Gaussian GICP 設定（継承）
+    voxel_resolution: 0.5
+    mahalanobis_threshold: 7.82
+```
+
+---
+
+## 12. 参考文献
 
 - [AKF-LIO: LiDAR-Inertial Odometry with Gaussian Map by Adaptive Kalman Filter](https://arxiv.org/pdf/2503.06891)
 - [Faster-LIO: Lightweight Tightly Coupled Lidar-inertial Odometry using Parallel Sparse Incremental Voxels](https://github.com/gaoxiang12/faster-lio)
