@@ -7,7 +7,7 @@
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 
-#include "akf_lio/msg/custom_msg.hpp"
+#include <livox_interfaces/msg/custom_msg.hpp>
 #include "common_lib.h"
 
 namespace velodyne_ros
@@ -81,7 +81,7 @@ namespace akf_lio
         ~PointCloudPreprocess() = default;
 
         /// processors
-        void Process(const akf_lio::msg::CustomMsg::SharedPtr &msg, PointCloudType::Ptr &pcl_out);
+        void Process(const livox_interfaces::msg::CustomMsg::SharedPtr &msg, PointCloudType::Ptr &pcl_out);
         void Process(const sensor_msgs::msg::PointCloud2::SharedPtr &msg, PointCloudType::Ptr &pcl_out);
         void Set(LidarType lid_type, double blind, int point_filter_num);
 
@@ -96,7 +96,7 @@ namespace akf_lio
         bool deskew_ = true;
 
     private:
-        void AviaHandler(const akf_lio::msg::CustomMsg::SharedPtr &msg);
+        void AviaHandler(const livox_interfaces::msg::CustomMsg::SharedPtr &msg);
         void Oust64Handler(const sensor_msgs::msg::PointCloud2::SharedPtr &msg);
         void VelodyneHandler(const sensor_msgs::msg::PointCloud2::SharedPtr &msg);
 

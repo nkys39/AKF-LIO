@@ -17,7 +17,7 @@
 #include <condition_variable>
 #include <thread>
 
-#include "akf_lio/msg/custom_msg.hpp"
+#include <livox_interfaces/msg/custom_msg.hpp>
 #include "imu_processing.hpp"
 #include "ivox3d/ivox3d.h"
 #include "options.h"
@@ -67,7 +67,7 @@ namespace akf_lio
 
         // callbacks of lidar and imu
         void StandardPCLCallBack(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
-        void LivoxPCLCallBack(const akf_lio::msg::CustomMsg::SharedPtr msg);
+        void LivoxPCLCallBack(const livox_interfaces::msg::CustomMsg::SharedPtr msg);
         void IMUCallBack(const sensor_msgs::msg::Imu::SharedPtr msg_in);
 
         // sync lidar with imu
@@ -134,7 +134,7 @@ namespace akf_lio
         PointVector plane_coef_; // plane coeffs
 
         /// ros pub and sub stuffs
-        rclcpp::Subscription<akf_lio::msg::CustomMsg>::SharedPtr sub_livox_pcl_;
+        rclcpp::Subscription<livox_interfaces::msg::CustomMsg>::SharedPtr sub_livox_pcl_;
         rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_pcl_;
         rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu_;
         rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_laser_cloud_world_;

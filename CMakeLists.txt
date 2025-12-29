@@ -40,6 +40,7 @@ find_package(pcl_conversions REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
+find_package(livox_interfaces REQUIRED)
 
 # Third-party dependencies
 find_package(Eigen3 REQUIRED)
@@ -57,11 +58,9 @@ if(NOT TBB_FOUND)
   endif()
 endif()
 
-# Generate messages
+# Generate messages (only Pose6D, Livox messages come from livox_interfaces)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Pose6D.msg"
-  "msg/CustomPoint.msg"
-  "msg/CustomMsg.msg"
   DEPENDENCIES builtin_interfaces std_msgs
 )
 
@@ -102,6 +101,7 @@ ament_target_dependencies(${PROJECT_NAME}_lib
   tf2_geometry_msgs
   pcl_conversions
   cv_bridge
+  livox_interfaces
 )
 
 target_link_libraries(${PROJECT_NAME}_lib
@@ -174,6 +174,7 @@ ament_export_dependencies(
   pcl_conversions
   cv_bridge
   rosidl_default_runtime
+  livox_interfaces
 )
 
 ament_package()
