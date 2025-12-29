@@ -822,7 +822,188 @@ small_gicp/
 
 ---
 
-## 9. 参考文献
+## 9. 移動体・外れ値対策
+
+AKF-LIO の移動体対策を Gaussian GICP に統合する。
+
+### 9.1 多段階リジェクション
+
+```cpp
+struct OutlierRejectionConfig {
+    // 幾何学的リジェクション
+    double min_eigenvalue_ratio = 0.04;    // 最小固有値比（平面度）
+    double max_tangent_distance = 1.0;     // 接平面内最大距離
+    double max_normal_distance_ratio = 1.0/9.0; // 法線方向最大距離比
+
+    // 統計的リジェクション
+    double mahalanobis_threshold = 7.82;   // χ² 3DoF 95%
+    double max_residual = 0.5;             // 最大残差 [m]
+
+    // 時間的一貫性
+    int min_consistent_frames = 3;         // 最小一貫フレーム数
+};
+```
+
+### 9.2 幾何学的リジェクション
+
+```cpp
+bool GaussianGICP::isValidCorrespondence(
+    const Eigen::Vector3d& query,
+    const GaussianPoint& gaussian) {
+
+    Eigen::Vector3d diff = query - gaussian.mean;
+
+    // 固有値分解（共分散から平面性を確認）
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(gaussian.cov);
+    Eigen::Vector3d eigenvalues = solver.eigenvalues();
+    Eigen::Matrix3d eigenvectors = solver.eigenvectors();
+
+    // 1. 平面度チェック（λ2 が十分大きいか）
+    if (eigenvalues(1) < config_.min_eigenvalue_ratio) {
+        return false;  // 平面として信頼できない
+    }
+
+    // 2. 接平面内距離チェック
+    Eigen::Vector3d normal = eigenvectors.col(0);
+    Eigen::Vector3d tangent1 = eigenvectors.col(1);
+    Eigen::Vector3d tangent2 = eigenvectors.col(2);
+
+    double dist_tangent = std::pow(tangent1.dot(diff), 2) / eigenvalues(1) +
+                          std::pow(tangent2.dot(diff), 2) / eigenvalues(2);
+
+    if (dist_tangent > config_.max_tangent_distance * config_.max_tangent_distance) {
+        return false;  // 接平面内で離れすぎ
+    }
+
+    // 3. 法線方向距離チェック（距離依存閾値）
+    double dist_normal = std::abs(normal.dot(diff));
+    double distance_from_sensor = query.norm();
+    double max_normal_dist = config_.max_normal_distance_ratio * std::sqrt(distance_from_sensor);
+
+    if (dist_normal > max_normal_dist) {
+        return false;  // 法線方向に離れすぎ（移動体の可能性）
+    }
+
+    return true;
+}
+```
+
+### 9.3 指数重み付け（AKF-LIO 式）
+
+```cpp
+double GaussianGICP::computeAdaptiveWeight(
+    const GaussianPoint& gaussian,
+    double point_to_plane_dist,
+    double mahalanobis_dist) {
+
+    // 1. 残差ベースの uncertainty（AKF-LIO 式）
+    double residual_uncertainty = point_to_plane_dist * point_to_plane_dist;
+
+    // 2. 指数重み付け（移動体の影響を指数的に抑制）
+    double exp_weight = std::exp(-config_.t_ratio_b * residual_uncertainty);
+
+    // 3. マップ側の uncertainty による重み
+    double map_uncertainty_weight = 1.0 / (1.0 + gaussian.uncertainty);
+
+    // 4. 平面の厚さ（薄いほど信頼できる）
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(gaussian.cov);
+    double thickness = solver.eigenvalues()(0);  // 最小固有値
+    double thickness_weight = 1.0 / (1.0 + thickness);
+
+    // 5. 観測回数による信頼度
+    double observation_weight = std::min(
+        1.0,
+        static_cast<double>(gaussian.pt_num) / config_.min_observation_count);
+
+    return exp_weight * map_uncertainty_weight * thickness_weight * observation_weight;
+}
+```
+
+### 9.4 マップ Gaussian の Uncertainty 更新
+
+```cpp
+void GaussianGICP::updateMapUncertainty(
+    const std::vector<Correspondence>& correspondences,
+    const Eigen::Matrix4d& final_T,
+    const pcl::PointCloud<pcl::PointXYZ>& source) {
+
+    for (const auto& corr : correspondences) {
+        // 最終残差を計算
+        Eigen::Vector3d p_src(source.points[corr.source_idx].x,
+                               source.points[corr.source_idx].y,
+                               source.points[corr.source_idx].z);
+        Eigen::Vector3d transformed = final_T.block<3,3>(0,0) * p_src +
+                                      final_T.block<3,1>(0,3);
+
+        // Point-to-plane 残差
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(corr.target_gaussian.cov);
+        Eigen::Vector3d normal = solver.eigenvectors().col(0);
+        Eigen::Vector3d diff = transformed - corr.target_gaussian.mean;
+        double p2pl = std::abs(normal.dot(diff));
+
+        // マップの Gaussian を更新
+        GaussianPoint& map_g = map_->getGaussian(corr.target_gaussian_idx);
+
+        // Uncertainty の適応的更新（AKF-LIO 式）
+        // 新しい残差² と既存の uncertainty の加重平均
+        double new_uncertainty = p2pl * p2pl;
+        double w_old = static_cast<double>(map_g.use_num);
+        double w_new = 1.0;
+
+        if (w_old + w_new > 0) {
+            map_g.uncertainty = (w_old * map_g.uncertainty + w_new * new_uncertainty) /
+                               (w_old + w_new);
+        }
+
+        map_g.use_num++;
+
+        // 最大 use_num の制限（古い情報の影響を制限）
+        if (map_g.use_num > config_.max_use_num) {
+            map_g.use_num = config_.max_use_num;
+        }
+    }
+}
+```
+
+### 9.5 動的物体の間接的除去
+
+移動体は以下のメカニズムで間接的に除去される：
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  移動体からの点群                                                │
+├─────────────────────────────────────────────────────────────────┤
+│  1. マップとの対応探索 → 対応が見つからない or 大きなマハラノビス距離  │
+│  2. 対応が見つかった場合 → 大きな point-to-plane 残差              │
+│  3. 大きな残差 → 高い uncertainty (p2pl²)                        │
+│  4. 高い uncertainty → 指数的に低い重み exp(-t_ratio_b * uncertainty) │
+│  5. 低い重み → 最適化への寄与が minimal                           │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 9.6 パラメータ設定
+
+```yaml
+gaussian_gicp:
+  ros__parameters:
+    # 幾何学的リジェクション
+    min_eigenvalue_ratio: 0.04
+    max_tangent_distance: 1.0
+    max_normal_distance_ratio: 0.111  # 1/9
+
+    # AKF 重み付け
+    t_ratio_b: 1.0                    # 指数重み係数
+    init_uncertainty: 0.01            # 初期 uncertainty
+    max_use_num: 100                  # 最大使用回数
+
+    # 統計的リジェクション
+    mahalanobis_threshold: 7.82       # χ² 3DoF 95%
+    max_residual: 0.5                 # 最大残差 [m]
+```
+
+---
+
+## 10. 参考文献
 
 - [AKF-LIO: LiDAR-Inertial Odometry with Gaussian Map by Adaptive Kalman Filter](https://arxiv.org/pdf/2503.06891)
 - [Faster-LIO: Lightweight Tightly Coupled Lidar-inertial Odometry using Parallel Sparse Incremental Voxels](https://github.com/gaoxiang12/faster-lio)
