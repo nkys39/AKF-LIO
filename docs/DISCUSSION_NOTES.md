@@ -427,7 +427,277 @@ class PointBasedGaussianLIO {
 
 ---
 
-## 8. 参考文献
+## 8. GICP/VGICP vs AKF-LIO のマハラノビス距離
+
+### 8.1 核心的な違い
+
+標準的な GICP/VGICP もマハラノビス距離を使用するが、**使用箇所が異なる**。
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  マハラノビス距離の使用箇所                                      │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│                        対応点探索        コスト関数              │
+│                        (Nearest Neighbor) (Optimization)         │
+│  ─────────────────────────────────────────────────────────────  │
+│  GICP/VGICP           ユークリッド距離    マハラノビス距離       │
+│  AKF-LIO              マハラノビス距離    マハラノビス距離       │
+│                       ↑                                         │
+│                       ここが違う！                               │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 8.2 詳細比較
+
+| 項目 | GICP/VGICP (small_gicp) | AKF-LIO |
+|------|------------------------|---------|
+| **対応点探索** | ユークリッド距離 KNN | マハラノビス距離 |
+| **コスト関数** | マハラノビス距離 | マハラノビス距離 |
+| **Gaussian 粒度** | ボクセル単位 | 点単位 |
+| **動的更新** | なし（バッチ） | Pseudo-merge + Uncertainty |
+
+### 8.3 なぜ対応点探索が重要か
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  角での対応点探索の違い                                          │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  VGICP (ユークリッド距離で探索):                                 │
+│                                                                  │
+│      壁A ●                                                       │
+│          │╲    ○ query                                          │
+│          │ ╲  ╱ ← ユークリッド距離が最小の点を選択              │
+│          │  ╲╱                                                   │
+│      壁B ●───●                                                   │
+│              ↑                                                   │
+│         この点が選ばれる可能性                                   │
+│         （異なる平面でも空間的に近ければ対応）                   │
+│                                                                  │
+│  → 対応が決まった後にマハラノビス距離でコスト計算               │
+│  → 既に間違った対応を選んでいる可能性                           │
+│                                                                  │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  AKF-LIO (マハラノビス距離で探索):                               │
+│                                                                  │
+│      壁A ●    ← この点の共分散は壁Aに沿った楕円                 │
+│          │╲    ○ query                                          │
+│          │ ╲                                                     │
+│          │  ╲   マハラノビス距離で「遠い」と判定                │
+│      壁B ●───● ← この点の共分散は壁Bに沿った楕円               │
+│               ↑                                                  │
+│          マハラノビス距離で「近い」と判定                        │
+│          → 正しい対応を選択                                     │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 8.4 コード比較
+
+```cpp
+// VGICP (small_gicp): ユークリッド距離で探索
+std::vector<Correspondence> findCorrespondences(const PointCloud& source) {
+    for (auto& pt : source) {
+        // ユークリッド距離で最近傍を探索
+        auto nearest = kdtree.nearestNeighbor(pt);  // ← ユークリッド
+
+        if (nearest.distance < max_dist) {
+            correspondences.push_back({pt, nearest});
+        }
+    }
+    return correspondences;
+}
+
+// コスト関数ではマハラノビス距離を使用
+double computeCost(const Correspondence& corr) {
+    Eigen::Vector3d diff = corr.source - corr.target.mean;
+    Eigen::Matrix3d combined_cov = corr.source_cov + corr.target_cov;
+    return diff.transpose() * combined_cov.inverse() * diff;  // ← マハラノビス
+}
+```
+
+```cpp
+// AKF-LIO: マハラノビス距離で探索
+std::vector<Correspondence> findCorrespondences(const PointCloud& source) {
+    for (auto& pt : source) {
+        std::vector<DistPoint> candidates;
+        for (auto& map_pt : nearby_points) {
+            Eigen::Vector3d diff = pt.pos - map_pt.mean;
+            // マハラノビス距離で評価
+            double mal_dist = diff.transpose() * map_pt.cov.inverse() * diff;
+            if (mal_dist < threshold) {
+                candidates.push_back({map_pt, mal_dist});
+            }
+        }
+        // マハラノビス距離が最小の点を選択
+        auto best = std::min_element(candidates.begin(), candidates.end());
+        correspondences.push_back({pt, best->point});
+    }
+    return correspondences;
+}
+```
+
+### 8.5 AKF-LIO のその他の利点
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  AKF-LIO の追加機能                                              │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  1. 点単位 Gaussian（ボクセル単位ではない）                      │
+│     → 角や段差でも正確な法線を維持                              │
+│                                                                  │
+│  2. Pseudo-merge（マハラノビス距離ベース）                       │
+│     → 同じ平面上の点のみマージ                                  │
+│     → 異なる平面は分離を維持                                    │
+│                                                                  │
+│  3. Uncertainty 追跡                                             │
+│     → 残差² を蓄積して信頼度を計算                              │
+│     → 移動体の影響を自動的に抑制                                │
+│                                                                  │
+│  4. 指数重み付け                                                 │
+│     weight = exp(-t_ratio_b * uncertainty)                       │
+│     → 不確実な点は最適化への寄与を減らす                        │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 8.6 まとめ
+
+| 機能 | GICP/VGICP | AKF-LIO |
+|------|-----------|---------|
+| 対応点探索 | ユークリッド | **マハラノビス** |
+| Gaussian 粒度 | ボクセル | **点単位** |
+| 動的 Gaussian 更新 | ❌ | **✅ Pseudo-merge** |
+| 不確実性追跡 | ❌ | **✅ Uncertainty** |
+| 移動体対策 | 外れ値除去のみ | **✅ 指数重み付け** |
+
+**AKF-LIO の本質的な優位性**:
+1. **対応点探索からマハラノビス距離を使用** → 正しい対応を見つけやすい
+2. **点単位 Gaussian** → 角での法線精度
+3. **動的な Uncertainty 追跡** → 移動体・ノイズへの耐性
+
+---
+
+## 9. LiTAMIN2 センサモデル + ポイントベース LIO
+
+### 9.1 現状: 直接的な組み合わせは存在しない
+
+| 手法 | 共分散計算方法 | ポイントベース？ |
+|------|---------------|-----------------|
+| **LiTAMIN2** | センサモデル | ❌ スキャン単位レジストレーション |
+| **Point-LIO** | なし（点のみ） | ✅ |
+| **iG-LIO** | Welford's（逐次統計） | ✅ |
+| **LOG-LIO** | 局所点群統計 | ✅ |
+| **MA-LIO** | なし | ✅ |
+
+### 9.2 各手法の共分散アプローチ
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  ポイントベース LIO の共分散計算                                 │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Point-LIO:                                                      │
+│  └─ 共分散を使わない。点と平面の距離のみ                         │
+│                                                                  │
+│  iG-LIO:                                                         │
+│  └─ Welford's algorithm で逐次更新                              │
+│     → 複数点が蓄積されてから有効                                 │
+│                                                                  │
+│  LOG-LIO:                                                        │
+│  └─ 局所ウィンドウの点群から計算                                 │
+│     → バッチ処理が必要                                           │
+│                                                                  │
+│  LiTAMIN2 式:                                                    │
+│  └─ センサモデルから1点で計算可能 ← これを使った LIO がない！    │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 9.3 研究ギャップ: 未開拓の組み合わせ
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  提案: LiTAMIN2 センサモデル + ポイントベース LIO                │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  既存手法の問題:                                                 │
+│  ├─ Point-LIO: 共分散なし → 形状情報を活用できない              │
+│  ├─ iG-LIO: 点が蓄積するまで共分散が不正確                      │
+│  └─ LOG-LIO: バッチ処理が必要で遅延                             │
+│                                                                  │
+│  LiTAMIN2 センサモデルの利点:                                    │
+│  ├─ 1点目から正確な共分散が利用可能                             │
+│  ├─ 距離・入射角依存の不確実性をモデル化                        │
+│  └─ 追加計算コストが小さい                                      │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 9.4 提案設計: Sensor-Aware Point-LIO
+
+```cpp
+// LiTAMIN2 センサモデル + Point-LIO の統合
+class SensorAwarePointLIO {
+    SensorCovarianceModel sensor_model_;  // LiTAMIN2 由来
+
+    void processPoint(const PointType& pt, double timestamp) {
+        // 1. IMU 伝播
+        propagateIMU(timestamp);
+
+        // 2. センサモデルから点の共分散を計算（LiTAMIN2 式）
+        //    → 1点目から使える！
+        Eigen::Matrix3d pt_cov = sensor_model_.computeCovariance(pt);
+
+        // 3. マップから最近傍を探索
+        auto nearest = findNearestInMap(pt);
+
+        if (nearest.valid) {
+            // 4. 共分散を考慮した残差計算
+            Eigen::Matrix3d combined_cov = pt_cov;
+            if (nearest.has_covariance) {
+                combined_cov += nearest.cov;
+            }
+
+            // 5. 情報行列で重み付けした状態更新
+            Eigen::Matrix3d info = combined_cov.inverse();
+            updateStateWithInformation(pt, nearest, info);
+        }
+    }
+};
+```
+
+### 9.5 期待される利点
+
+| 項目 | Point-LIO | iG-LIO | 提案手法 |
+|------|-----------|--------|----------|
+| **初期共分散** | ❌ なし | △ 不正確 | ✅ センサモデルから |
+| **入射角考慮** | ❌ | ❌ | ✅ |
+| **距離依存不確実性** | ❌ | ❌ | ✅ |
+| **計算オーバーヘッド** | 最小 | 小 | 小 |
+| **1点目からの精度** | △ | △ | ✅ |
+
+### 9.6 実装難易度
+
+```
+低 ←──────────────────────────────────────→ 高
+
+Point-LIO      提案手法        iG-LIO      LOG-LIO
+(共分散なし)   (センサモデル)   (逐次統計)   (局所バッチ)
+
+実装は比較的シンプル:
+- LiTAMIN2 のセンサモデル部分を抽出
+- Point-LIO の状態更新に組み込み
+- 情報行列で重み付け
+```
+
+---
+
+## 10. 参考文献
 
 - [AKF-LIO](https://arxiv.org/pdf/2503.06891) - Gaussian Map + Adaptive Kalman Filter
 - [Faster-LIO](https://github.com/gaoxiang12/faster-lio) - iVox ベース高速 LIO
